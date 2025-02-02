@@ -180,36 +180,35 @@ def main():
     # Render sidebar configuration
     config = render_sidebar_config()
 
-    # Main content
-    query = st.text_area("Enter your research question:", height=100, 
-                        placeholder="Example: What are the latest developments in quantum computing?")
-    
-    col1, col2 = st.columns([1, 5])
-    generate_button = col1.button("Generate Report", type="primary")
-    
-    # Initialize containers for progress tracking
-    progress_container = st.empty()
-    with progress_container:
-        if generate_button:
-            if not query:
-                st.warning("Please enter a research question")
-                return
-                
-            # Initialize progress tracking
-            progress_tracker.init_progress()
+    # Main content with form
+    with st.form(key="research_form"):
+        query = st.text_area(
+            "Enter your research question and press Enter:", 
+            height=100,
+            placeholder="Example: What are the latest developments in quantum computing?",
+            key="query"
+        )
+        submit_button = st.form_submit_button("Generate Report", type="primary", use_container_width=True)
+        
+    # Handle form submission
+    if submit_button:
+        if not query:
+            st.warning("Please enter a research question")
+            return
             
-            # Generate report (without PDF initially)
-            markdown_content, _ = asyncio.run(generate_research(query, config))
-            
-            if markdown_content:
-                st.session_state.research_output = markdown_content
-                progress_tracker.clear()
-                progress_container.empty()
-            else:
-                st.error("Failed to generate report")
-                progress_tracker.clear()
-                progress_container.empty()
-                return
+        # Initialize progress tracking
+        progress_tracker.init_progress()
+        
+        # Generate report (without PDF initially)
+        markdown_content, _ = asyncio.run(generate_research(query, config))
+        
+        if markdown_content:
+            st.session_state.research_output = markdown_content
+            progress_tracker.clear()
+        else:
+            st.error("Failed to generate report")
+            progress_tracker.clear()
+            return
 
     # Display report if available
     if st.session_state.research_output:

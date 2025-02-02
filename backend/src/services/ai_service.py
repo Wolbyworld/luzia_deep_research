@@ -6,6 +6,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import structlog
 import asyncio
 from ..config import Config
+from ..services.cache_service import CacheService
 
 logger = structlog.get_logger()
 
@@ -16,7 +17,8 @@ class AIService:
         self.max_tokens = Config.MAX_TOKENS
         self.temperature = Config.TEMPERATURE
         self.max_chunks = Config.MAX_CHUNKS_FOR_REPORT
-        self.batch_size = 20  # Maximum batch size for embeddings
+        self.max_concurrent_requests = 10  # Increased concurrent requests since we're not batching
+        self.cache_service = CacheService()
         
     async def generate_report(self, query: str, chunks: List[Dict[str, str]]) -> str:
         """
@@ -24,10 +26,23 @@ class AIService:
         """
         try:
             # Generate new report
+            logger.info("starting_chunk_reranking", query=query, chunks_count=len(chunks))
             ranked_chunks = await self._rerank_chunks_with_embeddings(query, chunks)
+            logger.info("chunk_reranking_completed", selected_chunks=len(ranked_chunks[:self.max_chunks]))
+            
             context = self._build_context(ranked_chunks[:self.max_chunks])
             prompt = self._create_report_prompt(query, context)
+            
+            logger.info("starting_gpt4_call", 
+                       model=self.model, 
+                       prompt_length=len(prompt),
+                       max_tokens=self.max_tokens)
+            
             response = await self._generate_with_gpt4(prompt)
+            
+            logger.info("gpt4_call_completed", 
+                       response_length=len(response),
+                       model=self.model)
             
             return response
             
@@ -36,36 +51,43 @@ class AIService:
             raise
         
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def _get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+    async def _get_embedding(self, text: str) -> List[float]:
         """
-        Get embeddings for a batch of texts
+        Get embedding for a single text
         """
         try:
             response = await self.openai_client.embeddings.create(
                 model=Config.EMBEDDING_MODEL,
-                input=texts
+                input=text
             )
-            return [embedding.embedding for embedding in response.data]
+            return response.data[0].embedding
             
         except Exception as e:
-            logger.error("batch_embedding_generation_failed", error=str(e), batch_size=len(texts))
+            logger.error("embedding_generation_failed", error=str(e))
             raise
 
     async def _get_all_embeddings(self, texts: List[str]) -> List[List[float]]:
         """
-        Get embeddings for all texts using batching and parallel processing
+        Get embeddings for all texts using pure parallel processing
         """
-        # Split texts into batches
-        batches = [texts[i:i + self.batch_size] for i in range(0, len(texts), self.batch_size)]
+        # Create semaphore for controlling concurrent API calls
+        semaphore = asyncio.Semaphore(self.max_concurrent_requests)
         
-        # Process batches in parallel
+        async def process_text(text: str, index: int):
+            async with semaphore:
+                embedding = await self._get_embedding(text)
+                return index, embedding
+        
         try:
-            embedding_batches = await asyncio.gather(
-                *[self._get_embeddings_batch(batch) for batch in batches]
-            )
+            # Create tasks for all texts with their indices
+            tasks = [process_text(text, i) for i, text in enumerate(texts)]
             
-            # Flatten the results
-            return [embedding for batch in embedding_batches for embedding in batch]
+            # Process all texts concurrently
+            results = await asyncio.gather(*tasks)
+            
+            # Sort by original index and return embeddings
+            sorted_results = sorted(results, key=lambda x: x[0])
+            return [embedding for _, embedding in sorted_results]
             
         except Exception as e:
             logger.error("parallel_embedding_failed", error=str(e))
@@ -142,27 +164,27 @@ Report:"""
         
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def _generate_with_gpt4(self, prompt: str) -> str:
-        """
-        Generate text using OpenAI GPT-4 with retry logic
-        """
+        """Generate text using GPT-4"""
         try:
-            completion = await self.openai_client.chat.completions.create(
+            start_time = asyncio.get_event_loop().time()
+            response = await self.openai_client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a research assistant that generates comprehensive reports based on provided sources."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
+                    {"role": "system", "content": "You are a research assistant tasked with creating comprehensive reports based on provided content."},
+                    {"role": "user", "content": prompt}
                 ],
                 temperature=self.temperature,
                 max_tokens=self.max_tokens
             )
+            end_time = asyncio.get_event_loop().time()
             
-            return completion.choices[0].message.content
+            logger.info("gpt4_call_timing",
+                       duration_seconds=round(end_time - start_time, 2),
+                       prompt_tokens=response.usage.prompt_tokens,
+                       completion_tokens=response.usage.completion_tokens,
+                       total_tokens=response.usage.total_tokens)
+            
+            return response.choices[0].message.content
             
         except Exception as e:
             logger.error("gpt4_generation_failed", error=str(e))
