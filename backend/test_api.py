@@ -4,6 +4,7 @@ import json
 from dotenv import load_dotenv
 import os
 import sys
+from typing import Optional
 
 """
 Test script for the Luzia Deep Research API.
@@ -14,7 +15,7 @@ please refer to the README.md file in this directory.
 # Load environment variables
 load_dotenv()
 
-async def test_research(query: str = None):
+async def test_research(query: str = None, output_format: str = "text"):
     """
     Test the research API endpoint
     """
@@ -34,11 +35,14 @@ async def test_research(query: str = None):
             payload = {
                 "query": query,
                 "max_results": 5,
-                "time_filter": "month"
+                "time_filter": "month",
+                "output_format": output_format,
+                "title": f"Research Report: {query}"
             }
             
             print("\nSending Research Request...")
             print("Query:", query)
+            print("Format:", output_format)
             
             response = await client.post(
                 f"{base_url}/api/research",
@@ -49,15 +53,22 @@ async def test_research(query: str = None):
             print("\nResponse Status:", response.status_code)
             
             if response.status_code == 200:
-                result = response.json()
                 print("\nResearch Completed Successfully!")
-                print("\nReport:")
-                print("=" * 80)
-                print(result["content"])
-                print("=" * 80)
-                print("\nSources:")
-                for source in result["sources"]:
-                    print(f"- {source}")
+                
+                # Handle different output formats
+                if output_format in ["pdf", "docx"]:
+                    # Save the file
+                    filename = f"research_report.{output_format}"
+                    with open(filename, "wb") as f:
+                        f.write(response.content)
+                    print(f"\nReport saved as: {filename}")
+                else:
+                    # Display text/markdown content
+                    print("\nReport:")
+                    print("=" * 80)
+                    print(response.text)
+                    print("=" * 80)
+                
             else:
                 print("\nError Response:", response.status_code)
                 try:
@@ -74,6 +85,13 @@ async def test_research(query: str = None):
             print(f"\nUnexpected error occurred: {str(e)}")
 
 if __name__ == "__main__":
-    # Get query from command line argument if provided
+    # Get query and format from command line arguments
     query = sys.argv[1] if len(sys.argv) > 1 else None
-    asyncio.run(test_research(query)) 
+    output_format = sys.argv[2] if len(sys.argv) > 2 else "text"
+    
+    if output_format not in ["text", "markdown", "pdf", "docx"]:
+        print(f"Invalid format: {output_format}")
+        print("Valid formats: text, markdown, pdf, docx")
+        sys.exit(1)
+        
+    asyncio.run(test_research(query, output_format)) 

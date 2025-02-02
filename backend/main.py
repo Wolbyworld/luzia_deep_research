@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
@@ -9,7 +10,9 @@ from src.core.searcher import WebSearcher
 from src.core.content_extractor import ContentExtractor
 from src.utils.chunking import ContentProcessor
 from src.services.ai_service import AIService
+from src.services.formatter_service import FormatterService
 from src.utils.logger import setup_logging
+from src.config import Config, OutputFormat
 
 # Load environment variables
 load_dotenv()
@@ -37,10 +40,8 @@ class SearchRequest(BaseModel):
     query: str = Field(..., min_length=3, description="The research query to search for")
     max_results: Optional[int] = Field(10, ge=1, le=20, description="Number of search results to process")
     time_filter: Optional[str] = Field(None, description="Time filter for search results (day, week, month, year)")
-
-class ResearchResponse(BaseModel):
-    content: str = Field(..., description="The generated research report")
-    sources: List[str] = Field(..., description="List of sources used in the report")
+    output_format: OutputFormat = Field(Config.DEFAULT_OUTPUT_FORMAT, description="Output format (text, markdown, pdf, docx)")
+    title: Optional[str] = Field(None, description="Optional title for the report")
 
 # Service dependencies
 def get_searcher():
@@ -55,25 +56,32 @@ def get_content_processor():
 def get_ai_service():
     return AIService()
 
+def get_formatter_service():
+    return FormatterService()
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
     return {"status": "healthy", "service": "Luzia Deep Research API"}
 
-@app.post("/api/research", response_model=ResearchResponse)
+@app.post("/api/research")
 async def generate_research(
     request: SearchRequest,
     searcher: WebSearcher = Depends(get_searcher),
     extractor: ContentExtractor = Depends(get_content_extractor),
     processor: ContentProcessor = Depends(get_content_processor),
-    ai_service: AIService = Depends(get_ai_service)
+    ai_service: AIService = Depends(get_ai_service),
+    formatter: FormatterService = Depends(get_formatter_service)
 ):
     """
     Generate a research report based on the query
     """
     try:
         # Log request
-        logger.info("research_request_received", query=request.query, max_results=request.max_results)
+        logger.info("research_request_received", 
+                   query=request.query, 
+                   max_results=request.max_results,
+                   output_format=request.output_format)
         
         # 1. Perform web search
         search_results = await searcher.search(request.query, request.time_filter)
@@ -101,14 +109,29 @@ async def generate_research(
         # 4. Generate report
         report = await ai_service.generate_report(request.query, processed_contents)
         
-        # 5. Prepare response
+        # 5. Get unique sources
         sources = list(set(content["url"] for content in contents))
         
-        logger.info("research_completed", query=request.query, sources_count=len(sources))
-        
-        return ResearchResponse(
+        # 6. Format output
+        formatted_output = formatter.format_output(
             content=report,
-            sources=sources
+            sources=sources,
+            output_format=request.output_format,
+            title=request.title
+        )
+        
+        logger.info("research_completed", 
+                   query=request.query, 
+                   sources_count=len(sources),
+                   format=request.output_format)
+        
+        # Return response with appropriate content type
+        return Response(
+            content=formatted_output["content"],
+            media_type=formatted_output["mime_type"],
+            headers={
+                "Content-Disposition": f"attachment; filename=research_report.{formatted_output['format']}"
+            } if request.output_format in ["pdf", "docx"] else None
         )
         
     except HTTPException:

@@ -11,3 +11,6 @@ numpy>=1.24.0
 redis>=5.0.1
 tenacity>=8.2.3
 structlog>=24.1.0
+python-docx>=0.8.11
+reportlab>=4.0.8
+markdown>=3.5.2

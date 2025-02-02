@@ -1,9 +1,12 @@
-from typing import Dict, Any
+from typing import Dict, Any, Literal, List
 import os
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Valid output formats
+OutputFormat = Literal["text", "markdown", "pdf", "docx"]
 
 class Config:
     # Environment
@@ -40,6 +43,12 @@ class Config:
     RATE_LIMIT_SEARCH = int(os.getenv("RATE_LIMIT_SEARCH", "5"))  # requests per minute
     RATE_LIMIT_CONTENT = int(os.getenv("RATE_LIMIT_CONTENT", "20"))
     RATE_LIMIT_AI = int(os.getenv("RATE_LIMIT_AI", "5"))
+    
+    # Output Settings
+    DEFAULT_OUTPUT_FORMAT = os.getenv("DEFAULT_OUTPUT_FORMAT", "text")
+    VALID_OUTPUT_FORMATS: List[OutputFormat] = ["text", "markdown", "pdf", "docx"]
+    PDF_FONT_SIZE = int(os.getenv("PDF_FONT_SIZE", "12"))
+    DOCX_TEMPLATE = os.getenv("DOCX_TEMPLATE", None)  # Optional path to .docx template
     
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
