@@ -164,14 +164,31 @@ def render_sidebar_config() -> dict:
     
     return config
 
+# Function to load and display the logo
+def display_logo():
+    logo_path = root_dir / "assets" / "logo.png"
+    if logo_path.exists():
+        with open(logo_path, "rb") as f:
+            logo_contents = f.read()
+            logo_b64 = base64.b64encode(logo_contents).decode()
+            
+        # Create a clickable logo that redirects to home with smaller size and styling
+        st.markdown(
+            f'<a href="/" target="_self"><img src="data:image/png;base64,{logo_b64}" style="max-width: 60px; margin: 10px 0;"></a>',
+            unsafe_allow_html=True
+        )
+
 def main():
     st.set_page_config(
-        page_title="Deep Research Assistant",
+        page_title="Luzia Research",
         page_icon="🔍",
         layout="wide"
     )
     
-    st.title("🔍 Deep Research Assistant")
+    # Display the logo
+    display_logo()
+    
+    st.title("Luzia Research Agent")
     st.markdown("""
     Generate comprehensive research reports from your questions using AI.
     Advanced settings are available in the sidebar for fine-tuning the research process.
