@@ -1,0 +1,13 @@
+fastapi>=0.104.1
+uvicorn>=0.24.0
+python-dotenv>=1.0.0
+httpx>=0.25.1
+beautifulsoup4>=4.12.2
+python-jose>=3.3.0
+pydantic>=2.4.2
+pytest>=7.4.3
+openai>=1.12.0
+numpy>=1.24.0
+redis>=5.0.1
+tenacity>=8.2.3
+structlog>=24.1.0
