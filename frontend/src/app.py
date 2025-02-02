@@ -19,7 +19,9 @@ if 'pdf_data' not in st.session_state:
     st.session_state.pdf_data = None
 
 # App configuration
-API_URL = os.getenv("API_URL", "http://localhost:8000")
+API_URL = os.getenv("API_URL", "https://luzia-research-backend-ee9b4ecc575f.herokuapp.com")
+if API_URL.endswith('/'):
+    API_URL = API_URL[:-1]
 
 # Default configuration
 DEFAULT_CONFIG = {
@@ -74,7 +76,7 @@ async def generate_research(query: str, config: dict) -> tuple[Optional[str], Op
     """
     Generate research report and PDF
     """
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             # Health check
             progress_tracker.show_progress("init")
@@ -101,7 +103,13 @@ async def generate_research(query: str, config: dict) -> tuple[Optional[str], Op
             )
             
             if response.status_code != 200:
-                st.error(f"Error generating report: {response.text}")
+                error_message = "Error generating report"
+                try:
+                    error_detail = response.json().get("detail", str(response.text))
+                    error_message = f"{error_message}: {error_detail}"
+                except:
+                    error_message = f"{error_message}: Status {response.status_code}"
+                st.error(error_message)
                 return None, None
             
             # Get the markdown content directly from response.text
