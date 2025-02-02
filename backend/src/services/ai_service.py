@@ -4,6 +4,7 @@ from openai import AsyncOpenAI
 import numpy as np
 from tenacity import retry, stop_after_attempt, wait_exponential
 import structlog
+import asyncio
 from ..config import Config
 
 logger = structlog.get_logger()
@@ -15,6 +16,7 @@ class AIService:
         self.max_tokens = Config.MAX_TOKENS
         self.temperature = Config.TEMPERATURE
         self.max_chunks = Config.MAX_CHUNKS_FOR_REPORT
+        self.batch_size = 20  # Maximum batch size for embeddings
         
     async def generate_report(self, query: str, chunks: List[Dict[str, str]]) -> str:
         """
@@ -34,34 +36,58 @@ class AIService:
             raise
         
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def _get_embedding(self, text: str) -> List[float]:
+    async def _get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """
-        Get embeddings using OpenAI's Ada model
+        Get embeddings for a batch of texts
         """
         try:
             response = await self.openai_client.embeddings.create(
                 model=Config.EMBEDDING_MODEL,
-                input=text
+                input=texts
             )
-            return response.data[0].embedding
+            return [embedding.embedding for embedding in response.data]
             
         except Exception as e:
-            logger.error("embedding_generation_failed", error=str(e), text_length=len(text))
+            logger.error("batch_embedding_generation_failed", error=str(e), batch_size=len(texts))
+            raise
+
+    async def _get_all_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """
+        Get embeddings for all texts using batching and parallel processing
+        """
+        # Split texts into batches
+        batches = [texts[i:i + self.batch_size] for i in range(0, len(texts), self.batch_size)]
+        
+        # Process batches in parallel
+        try:
+            embedding_batches = await asyncio.gather(
+                *[self._get_embeddings_batch(batch) for batch in batches]
+            )
+            
+            # Flatten the results
+            return [embedding for batch in embedding_batches for embedding in batch]
+            
+        except Exception as e:
+            logger.error("parallel_embedding_failed", error=str(e))
             raise
         
     async def _rerank_chunks_with_embeddings(self, query: str, chunks: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
-        Rerank chunks using OpenAI embeddings similarity
+        Rerank chunks using OpenAI embeddings similarity with batch processing
         """
         try:
-            query_embedding = await self._get_embedding(query)
+            # Prepare all texts for embedding (query + all chunks)
+            chunk_texts = [chunk["content"] for chunk in chunks]
+            all_texts = [query] + chunk_texts
             
-            # Process chunks in parallel for better performance
-            chunk_embeddings = []
-            for chunk in chunks:
-                embedding = await self._get_embedding(chunk["content"])
-                chunk_embeddings.append(embedding)
-                
+            # Get embeddings for all texts in parallel batches
+            all_embeddings = await self._get_all_embeddings(all_texts)
+            
+            # Separate query embedding and chunk embeddings
+            query_embedding = all_embeddings[0]
+            chunk_embeddings = all_embeddings[1:]
+            
+            # Calculate similarities
             similarities = [
                 self._cosine_similarity(query_embedding, chunk_embedding)
                 for chunk_embedding in chunk_embeddings
