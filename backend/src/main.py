@@ -51,6 +51,13 @@ class SearchRequest(BaseModel):
     is_pro_mode: Optional[bool] = Field(False, description="Whether to use pro mode with research planning")
     max_questions: Optional[int] = Field(4, ge=2, le=8, description="Maximum number of research questions in pro mode")
 
+class SummarizeRequest(BaseModel):
+    content: str = Field(..., description="Content to summarize")
+
+class ChatRequest(BaseModel):
+    query: str = Field(..., description="User's question")
+    context: str = Field(..., description="Report content for context")
+
 # Service dependencies
 def get_searcher():
     return WebSearcher()
@@ -302,6 +309,92 @@ async def generate_research_stream(
         event_generator(),
         media_type="text/event-stream"
     )
+
+@app.post("/api/summarize")
+async def summarize_content(
+    request: SummarizeRequest,
+    ai_service: AIService = Depends(get_ai_service)
+):
+    """
+    Generate a concise summary of the content
+    """
+    try:
+        summary_prompt = f"""Please provide a concise summary of the following research report. 
+Focus on the key findings and main conclusions.
+
+Content:
+{request.content}
+
+Summary:"""
+
+        response = await ai_service.openai_client.chat.completions.create(
+            model=ai_service.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a research assistant tasked with creating clear, concise summaries."
+                },
+                {
+                    "role": "user",
+                    "content": summary_prompt
+                }
+            ],
+            temperature=0.3,
+            max_tokens=500  # Shorter for summaries
+        )
+        
+        return {
+            "summary": response.choices[0].message.content.strip()
+        }
+        
+    except Exception as e:
+        logger.error("summarization_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/chat")
+async def chat_with_report(
+    request: ChatRequest,
+    ai_service: AIService = Depends(get_ai_service)
+):
+    """
+    Answer questions about the research report
+    """
+    try:
+        chat_prompt = f"""You are a helpful research assistant. Use the following research report to answer the user's question.
+Answer based only on the information provided in the report. If the answer cannot be found in the report, say so.
+
+Research Report:
+{request.context}
+
+User's Question: {request.query}
+
+Please provide a clear and concise answer, citing relevant parts of the report when appropriate.
+
+Answer:"""
+
+        response = await ai_service.openai_client.chat.completions.create(
+            model=ai_service.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a research assistant helping users understand research reports."
+                },
+                {
+                    "role": "user",
+                    "content": chat_prompt
+                }
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        
+        return {
+            "response": response.choices[0].message.content.strip()
+        }
+        
+    except Exception as e:
+        logger.error("chat_response_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

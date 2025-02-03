@@ -124,7 +124,7 @@ class ProResearchService:
             
     def _prepare_compilation_content(self, main_query: str, reports: List[Dict], current_date: str) -> str:
         """
-        Prepare the content for final compilation with optimized prompt.
+        Prepare the content for final compilation with optimized prompt and interactive citations.
         """
         # Prepare a concise version of each report with sources
         sections = []
@@ -143,8 +143,11 @@ class ProResearchService:
         # Remove duplicate sources while preserving order
         unique_sources = list(dict.fromkeys(all_sources))
         
-        # Format sources section
-        sources_section = "\n".join([f"[{i+1}] {source}" for i, source in enumerate(unique_sources)])
+        # Format sources section with HTML links
+        sources_section = "\n".join([
+            f'[{i+1}] <a href="{source}" target="_blank" class="citation-link" data-citation-id="{i+1}">{source}</a>'
+            for i, source in enumerate(unique_sources)
+        ])
         
         all_findings = "\n".join(sections)
         
@@ -163,8 +166,9 @@ Create a concise yet comprehensive report that:
 1. Directly answers the main query
 2. Synthesizes key insights from all research areas
 3. Maintains academic tone
-4. Cites specific sources using [X] format
+4. Uses HTML citation links in this format: <a href="URL" target="_blank" class="citation-link" data-citation-id="X">[X]</a>
 5. Notes current as of {current_date}
+6. Makes all citations clickable using the HTML format above
 
 Report:"""
         

@@ -19,6 +19,10 @@ if 'sub_reports' not in st.session_state:
     st.session_state.sub_reports = None
 if 'research_plan' not in st.session_state:
     st.session_state.research_plan = None
+if 'chat_messages' not in st.session_state:
+    st.session_state.chat_messages = []
+if 'summary' not in st.session_state:
+    st.session_state.summary = None
 
 # App configuration
 API_URL = "http://localhost:8000"
@@ -149,6 +153,49 @@ def show_progress(phase: str, progress: int):
     """Update progress bar with current phase"""
     update_progress(phase, progress)
 
+async def generate_summary(content: str) -> str:
+    """Generate a concise summary of the research report"""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{API_URL}/api/summarize",
+                json={"content": content},
+                timeout=60.0
+            )
+            
+            if response.status_code == 200:
+                return response.json()["summary"]
+            else:
+                st.error("Failed to generate summary")
+                return None
+                
+        except Exception as e:
+            st.error(f"Error generating summary: {str(e)}")
+            return None
+
+async def chat_with_report(query: str, report_content: str) -> str:
+    """Chat with the AI about the research report"""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{API_URL}/api/chat",
+                json={
+                    "query": query,
+                    "context": report_content
+                },
+                timeout=60.0
+            )
+            
+            if response.status_code == 200:
+                return response.json()["response"]
+            else:
+                st.error("Failed to get chat response")
+                return None
+                
+        except Exception as e:
+            st.error(f"Error in chat: {str(e)}")
+            return None
+
 def main():
     # Title
     st.title("Luzia Research Agent")
@@ -263,35 +310,84 @@ def main():
                 st.session_state.pdf_data = pdf_data
                 st.session_state.sub_reports = sub_reports
                 st.session_state.research_plan = research_plan
+
+        # Always show the report if it exists in session state
+        if st.session_state.research_output:
+            # Display research plan if in pro mode
+            if is_pro_mode and st.session_state.research_plan:
+                st.markdown("## Research Plan")
+                for i, question in enumerate(st.session_state.research_plan, 1):
+                    st.markdown(f"{i}. {question}")
+                st.markdown("---")
+            
+            # Display the main report
+            st.markdown("## Research Report")
+            st.markdown(st.session_state.research_output, unsafe_allow_html=True)
+            
+            # Add Summarize button
+            if st.button("📝 Generate Summary", key="summary_button"):
+                with st.spinner("Generating summary..."):
+                    summary = asyncio.run(generate_summary(st.session_state.research_output))
+                    if summary:
+                        st.session_state.summary = summary
+            
+            # Display summary if available
+            if st.session_state.summary:
+                with st.expander("📋 Report Summary", expanded=True):
+                    st.markdown(st.session_state.summary)
+            
+            # Display sub-reports in expandable sections if in pro mode
+            if is_pro_mode and st.session_state.sub_reports:
+                st.markdown("## Detailed Research Findings")
+                for i, report in enumerate(st.session_state.sub_reports, 1):
+                    with st.expander(f"Research Query {i}: {report['query']}"):
+                        st.markdown(report['content'])
+            
+            # Download buttons
+            if st.session_state.pdf_data:
+                st.download_button(
+                    label="Download PDF",
+                    data=st.session_state.pdf_data,
+                    file_name="research_report.pdf",
+                    mime="application/pdf"
+                )
+            
+            # Chat with Report section
+            st.markdown("## 💬 Chat with Report")
+            st.markdown("Ask questions about the research report and get instant answers.")
+            
+            # Initialize chat messages if not exists
+            if 'chat_messages' not in st.session_state:
+                st.session_state.chat_messages = []
+            
+            # Chat input
+            chat_input = st.text_input("Ask a question about the report:", key="chat_input")
+            
+            if chat_input:
+                # Add user message to chat history
+                st.session_state.chat_messages.append({"role": "user", "content": chat_input})
                 
-                # Display research plan if in pro mode
-                if is_pro_mode and research_plan:
-                    st.markdown("## Research Plan")
-                    for i, question in enumerate(research_plan, 1):
-                        st.markdown(f"{i}. {question}")
-                    st.markdown("---")
-                
-                # Display the main report
-                st.markdown("## Research Report")
-                st.markdown(markdown_content)
-                
-                # Display sub-reports in expandable sections if in pro mode
-                if is_pro_mode and sub_reports:
-                    st.markdown("## Detailed Research Findings")
-                    for i, report in enumerate(sub_reports, 1):
-                        with st.expander(f"Research Query {i}: {report['query']}"):
-                            st.markdown(report['content'])
-                
-                # Download buttons
-                if pdf_data:
-                    st.download_button(
-                        label="Download PDF",
-                        data=pdf_data,
-                        file_name="research_report.pdf",
-                        mime="application/pdf"
-                    )
-            else:
-                st.error("Failed to generate report. Please try again.")
+                # Get AI response
+                with st.spinner("Thinking..."):
+                    response = asyncio.run(chat_with_report(chat_input, st.session_state.research_output))
+                    if response:
+                        st.session_state.chat_messages.append({"role": "assistant", "content": response})
+                        # Force a rerun to update the chat display
+                        st.rerun()
+            
+            # Display chat history
+            if st.session_state.chat_messages:
+                st.markdown("### Chat History")
+                chat_container = st.container()
+                with chat_container:
+                    for msg in st.session_state.chat_messages:
+                        if msg["role"] == "user":
+                            st.markdown(f"**You:** {msg['content']}")
+                        else:
+                            st.markdown(f"**Assistant:** {msg['content']}")
+                            
+        elif generate_button:
+            st.error("Failed to generate report. Please try again.")
 
 if __name__ == "__main__":
     main() 

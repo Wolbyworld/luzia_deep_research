@@ -227,7 +227,7 @@ class AIService:
         
     def _create_report_prompt(self, query: str, context: str) -> str:
         """
-        Create prompt for report generation with source citation instructions
+        Create prompt for report generation with proper quotation format
         """
         return f"""Based on the following research query and source materials, generate a comprehensive report.
         
@@ -238,11 +238,14 @@ Source Materials:
 
 Please generate a detailed report that:
 1. Synthesizes information from multiple sources
-2. Provides accurate citations using [X] format for each source
+2. Uses proper quotation marks for direct quotes (e.g., "quoted text")
 3. Maintains a neutral, academic tone
 4. Organizes information logically
 5. Highlights key findings and insights
-6. Backs up each major claim with a source citation
+6. Properly attributes information to sources using standard quotation format
+
+For example:
+According to [Source], "direct quote here." Another source states that "another quote here."
 
 Report:"""
         
