@@ -60,10 +60,12 @@ class ProResearchService:
                         await progress_callback(f"Researching multiple queries:\n{active_msg}", progress)
                     
                     try:
-                        report = await self.ai_service.generate_report(search_query, [])
+                        # Get both report and sources
+                        report, sources = await self.ai_service.generate_report_with_sources(search_query, [])
                         return {
                             "query": search_query,
-                            "content": report
+                            "content": report,
+                            "sources": sources
                         }
                     finally:
                         if progress_callback:
@@ -124,14 +126,26 @@ class ProResearchService:
         """
         Prepare the content for final compilation with optimized prompt.
         """
-        # Prepare a concise version of each report
+        # Prepare a concise version of each report with sources
         sections = []
+        all_sources = []
+        
         for i, report in enumerate(reports, 1):
             # Extract key points from the report content (first few sentences)
             content = report['content'].split('.')[:3]  # Take first 3 sentences
             content = '. '.join(content) + '.'
-            sections.append(f"Query {i}: {report['query']}\nKey Findings: {content}\n")
+            sections.append(f"Research Area {i}: {report['query']}\nKey Findings: {content}\n")
             
+            # Collect sources
+            if 'sources' in report and report['sources']:
+                all_sources.extend(report['sources'])
+        
+        # Remove duplicate sources while preserving order
+        unique_sources = list(dict.fromkeys(all_sources))
+        
+        # Format sources section
+        sources_section = "\n".join([f"[{i+1}] {source}" for i, source in enumerate(unique_sources)])
+        
         all_findings = "\n".join(sections)
         
         return f"""As an expert research analyst, synthesize these findings into a comprehensive report.
@@ -142,11 +156,14 @@ Date: {current_date}
 Research Findings:
 {all_findings}
 
+Sources:
+{sources_section}
+
 Create a concise yet comprehensive report that:
 1. Directly answers the main query
-2. Synthesizes key insights from all research
+2. Synthesizes key insights from all research areas
 3. Maintains academic tone
-4. References specific findings (as Query X)
+4. Cites specific sources using [X] format
 5. Notes current as of {current_date}
 
 Report:"""

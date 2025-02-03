@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from openai import AsyncOpenAI
 import numpy as np
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -62,6 +62,59 @@ class AIService:
                        model=self.model)
             
             return response
+            
+        except Exception as e:
+            logger.error("report_generation_failed", error=str(e), query=query)
+            raise
+        
+    async def generate_report_with_sources(self, query: str, chunks: List[Dict[str, str]]) -> Tuple[str, List[str]]:
+        """
+        Generate a research report and return both the report and its sources
+        """
+        try:
+            # Log start of process
+            logger.info("starting_research_generation", 
+                       query=query, 
+                       available_chunks=len(chunks))
+            
+            # Rerank chunks
+            ranked_chunks = await self._rerank_chunks_with_embeddings(query, chunks)
+            used_chunks = ranked_chunks[:self.max_chunks]
+            
+            logger.info("chunk_reranking_completed", 
+                       total_chunks=len(chunks),
+                       selected_chunks=len(used_chunks))
+            
+            # Extract sources from chunks
+            sources = []
+            for chunk in used_chunks:
+                if 'url' in chunk and chunk['url'] not in sources:
+                    sources.append(chunk['url'])
+            
+            # Build context and generate report
+            context = self._build_context(used_chunks)
+            prompt = self._create_report_prompt(query, context)
+            
+            # Log token usage before API call
+            estimated_input_tokens = len(prompt) // 4  # Rough estimation
+            
+            logger.info("starting_gpt4_call", 
+                       model=self.model,
+                       estimated_input_tokens=estimated_input_tokens,
+                       max_output_tokens=self.max_tokens)
+            
+            report = await self._generate_with_gpt4(prompt)
+            
+            # Log completion
+            logger.info("research_metrics", 
+                       chunks_available=len(chunks),
+                       chunks_used=len(used_chunks),
+                       embeddings_generated=len(chunks) + 1,  # chunks + query
+                       estimated_input_tokens=estimated_input_tokens,
+                       output_tokens=len(report) // 4,  # Rough estimation
+                       model=self.model)
+            
+            return report, sources
             
         except Exception as e:
             logger.error("report_generation_failed", error=str(e), query=query)
@@ -174,7 +227,7 @@ class AIService:
         
     def _create_report_prompt(self, query: str, context: str) -> str:
         """
-        Create prompt for report generation
+        Create prompt for report generation with source citation instructions
         """
         return f"""Based on the following research query and source materials, generate a comprehensive report.
         
@@ -185,10 +238,11 @@ Source Materials:
 
 Please generate a detailed report that:
 1. Synthesizes information from multiple sources
-2. Provides accurate citations
+2. Provides accurate citations using [X] format for each source
 3. Maintains a neutral, academic tone
 4. Organizes information logically
 5. Highlights key findings and insights
+6. Backs up each major claim with a source citation
 
 Report:"""
         
