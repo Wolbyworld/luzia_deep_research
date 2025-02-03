@@ -1,6 +1,6 @@
 from typing import List, Dict
 import re
-from ..config import Config
+from config import Config
 
 def split_text_into_chunks(text: str, chunk_size: int = Config.CHUNK_SIZE) -> List[str]:
     """

@@ -1,39 +1,27 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
 from dotenv import load_dotenv
-from urllib.parse import urlparse
-from starlette.responses import StreamingResponse
+import json
 import asyncio
 
-from src.core.searcher import WebSearcher
-from src.core.content_extractor import ContentExtractor
-from src.utils.chunking import ContentProcessor
-from src.services.ai_service import AIService
-from src.services.formatter_service import FormatterService
-from src.utils.logger import setup_logging
-from src.config import Config, OutputFormat
+from core.searcher import WebSearcher
+from core.content_extractor import ContentExtractor
+from utils.chunking import ContentProcessor
+from services.ai_service import AIService
+from services.formatter_service import FormatterService
+from services.pro_research_service import ProResearchService
+from utils.logger import setup_logging
+from config import Config, OutputFormat
 
 # Load environment variables
 load_dotenv()
 
 # Setup logging
 logger = setup_logging()
-
-# Get Redis URL from Heroku
-redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-redis_data = urlparse(redis_url)
-
-# Update Redis configuration
-REDIS_CONFIG = {
-    'host': redis_data.hostname,
-    'port': redis_data.port,
-    'password': redis_data.password,
-    'ssl': True if redis_url.startswith('rediss://') else False
-}
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -56,10 +44,12 @@ app.add_middleware(
 
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=3, description="The research query to search for")
-    max_results: Optional[int] = Field(10, ge=1, le=20, description="Number of search results to process")
+    max_results: Optional[int] = Field(10, ge=1, le=50, description="Number of search results to process")
     time_filter: Optional[str] = Field(None, description="Time filter for search results (day, week, month, year)")
     output_format: OutputFormat = Field(Config.DEFAULT_OUTPUT_FORMAT, description="Output format (text, markdown, pdf, docx)")
     title: Optional[str] = Field(None, description="Optional title for the report")
+    is_pro_mode: Optional[bool] = Field(False, description="Whether to use pro mode with research planning")
+    max_questions: Optional[int] = Field(4, ge=2, le=8, description="Maximum number of research questions in pro mode")
 
 # Service dependencies
 def get_searcher():
@@ -77,91 +67,241 @@ def get_ai_service():
 def get_formatter_service():
     return FormatterService()
 
+def get_pro_research_service():
+    return ProResearchService()
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
     return {"status": "healthy", "service": "Luzia Deep Research API"}
 
+async def process_content(
+    query: str,
+    max_results: int,
+    time_filter: Optional[str],
+    searcher: WebSearcher,
+    extractor: ContentExtractor,
+    processor: ContentProcessor
+) -> List[dict]:
+    """Helper function to process content for a query"""
+    # 1. Perform web search
+    search_results = await searcher.search(query, time_filter)
+    if not search_results:
+        raise HTTPException(status_code=404, detail="No search results found")
+    
+    # 2. Extract content from URLs
+    contents = []
+    successful_extractions = 0
+    failed_extractions = 0
+    for result in search_results[:max_results]:
+        try:
+            content = await extractor.extract_from_url(result.link)
+            if content.get("content"):
+                contents.append(content)
+                successful_extractions += 1
+            else:
+                failed_extractions += 1
+        except:
+            failed_extractions += 1
+    
+    if not contents:
+        raise HTTPException(status_code=404, detail="Could not extract content from search results")
+    
+    # 3. Process and chunk content
+    processed_contents = processor.process_contents(contents)
+    
+    return processed_contents
+
 @app.post("/api/research")
 async def generate_research(
     request: SearchRequest,
-    background_tasks: BackgroundTasks,
     searcher: WebSearcher = Depends(get_searcher),
     extractor: ContentExtractor = Depends(get_content_extractor),
     processor: ContentProcessor = Depends(get_content_processor),
     ai_service: AIService = Depends(get_ai_service),
+    pro_service: ProResearchService = Depends(get_pro_research_service),
     formatter: FormatterService = Depends(get_formatter_service)
 ):
     """
     Generate a research report based on the query
     """
+    metrics = {
+        "sources_found": 0,
+        "sources_processed": 0,
+        "chunks_total": 0,
+        "total_tokens": 0
+    }
+    
     try:
-        # Log request
+        # Log initial request
         logger.info("research_request_received", 
                    query=request.query, 
                    max_results=request.max_results,
-                   output_format=request.output_format)
+                   output_format=request.output_format,
+                   is_pro_mode=request.is_pro_mode)
         
-        async def generate():
-            # 1. Perform web search
-            search_results = await searcher.search(request.query, request.time_filter)
-            if not search_results:
-                raise HTTPException(status_code=404, detail="No search results found")
+        if request.is_pro_mode:
+            # Pro mode: Use research planning
+            pro_service.max_questions = request.max_questions
             
-            logger.info("search_completed", results_count=len(search_results))
+            # Define progress callback
+            async def progress_callback(phase: str, progress: int):
+                logger.info("pro_research_progress", phase=phase, progress=progress)
             
-            # 2. Extract content from URLs
-            contents = []
-            for result in search_results[:request.max_results]:
-                content = await extractor.extract_from_url(result.link)
-                if content.get("content"):  # Only include if content was successfully extracted
-                    contents.append(content)
+            # Generate comprehensive report with research planning
+            result = await pro_service.generate_comprehensive_report(
+                request.query,
+                progress_callback=progress_callback
+            )
             
-            if not contents:
-                raise HTTPException(status_code=404, detail="Could not extract content from search results")
-            
-            logger.info("content_extraction_completed", extracted_count=len(contents))
-            
-            # 3. Process and chunk content
-            processed_contents = processor.process_contents(contents)
-            logger.info("content_processing_completed", chunks_count=len(processed_contents))
-            
-            # 4. Generate report
-            report = await ai_service.generate_report(request.query, processed_contents)
-            
-            # 5. Get unique sources
-            sources = list(set(content["url"] for content in contents))
-            
-            # 6. Format output
+            # Format the final report
             formatted_output = formatter.format_output(
-                content=report,
-                sources=sources,
+                content=result["final_report"],
+                sources=[],  # Sources will be in the report content
                 output_format=request.output_format,
                 title=request.title
             )
             
-            logger.info("research_completed", 
-                       query=request.query, 
-                       sources_count=len(sources),
-                       format=request.output_format)
-            
-            return formatted_output
-
-        # Use asyncio.create_task to handle the long-running process
-        result = await asyncio.create_task(generate())
+            if request.output_format in ["pdf", "docx"]:
+                return Response(
+                    content=formatted_output["content"],
+                    media_type=formatted_output["mime_type"],
+                    headers={
+                        "Content-Disposition": f"attachment; filename=research_report.{formatted_output['format']}"
+                    }
+                )
+            else:
+                return {
+                    "final_report": result["final_report"],
+                    "sub_reports": result["sub_reports"],
+                    "research_plan": result["research_plan"]
+                }
         
-        # Return response with appropriate content type
-        return Response(
-            content=result["content"],
-            media_type=result["mime_type"],
-            headers={
-                "Content-Disposition": f"attachment; filename=research_report.{result['format']}"
-            } if request.output_format in ["pdf", "docx"] else None
-        )
+        else:
+            # Standard mode: Process content and generate single report
+            processed_contents = await process_content(
+                request.query,
+                request.max_results,
+                request.time_filter,
+                searcher,
+                extractor,
+                processor
+            )
+            
+            # Generate report
+            report = await ai_service.generate_report(request.query, processed_contents)
+            
+            # Format output
+            formatted_output = formatter.format_output(
+                content=report,
+                sources=[],  # Sources will be in the report content
+                output_format=request.output_format,
+                title=request.title
+            )
+            
+            return Response(
+                content=formatted_output["content"],
+                media_type=formatted_output["mime_type"],
+                headers={
+                    "Content-Disposition": f"attachment; filename=research_report.{formatted_output['format']}"
+                } if request.output_format in ["pdf", "docx"] else None
+            )
         
     except Exception as e:
-        logger.error("research_error", error=str(e), query=request.query)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("research_error", error=str(e), query=request.query, metrics=metrics)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": str(e),
+                "metrics": metrics
+            }
+        )
+
+@app.post("/api/research/stream")
+async def generate_research_stream(
+    request: SearchRequest,
+    searcher: WebSearcher = Depends(get_searcher),
+    extractor: ContentExtractor = Depends(get_content_extractor),
+    processor: ContentProcessor = Depends(get_content_processor),
+    ai_service: AIService = Depends(get_ai_service),
+    pro_service: ProResearchService = Depends(get_pro_research_service),
+    formatter: FormatterService = Depends(get_formatter_service)
+):
+    """
+    Generate a research report with streaming progress updates
+    """
+    async def event_generator():
+        try:
+            if request.is_pro_mode:
+                # Pro mode: Use research planning
+                pro_service.max_questions = request.max_questions
+                
+                # Create a queue for progress updates
+                progress_queue = asyncio.Queue()
+                
+                async def progress_callback(phase: str, progress: int):
+                    await progress_queue.put((phase, progress))
+                
+                # Start the research task
+                research_task = asyncio.create_task(
+                    pro_service.generate_comprehensive_report(
+                        request.query,
+                        progress_callback=progress_callback
+                    )
+                )
+                
+                # Keep sending progress updates until research is complete
+                while not research_task.done():
+                    try:
+                        # Wait for progress update with timeout
+                        phase, progress = await asyncio.wait_for(
+                            progress_queue.get(),
+                            timeout=1.0
+                        )
+                        data = {
+                            "progress": progress,
+                            "phase": phase
+                        }
+                        yield f"data: {json.dumps(data)}\n\n"
+                    except asyncio.TimeoutError:
+                        continue
+                    except Exception as e:
+                        logger.error("progress_update_failed", error=str(e))
+                        continue
+                
+                # Get the final result
+                try:
+                    result = await research_task
+                    yield f"data: {json.dumps({'result': result})}\n\n"
+                except Exception as e:
+                    logger.error("research_task_failed", error=str(e))
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            
+            else:
+                # Standard mode: Process content and generate single report
+                processed_contents = await process_content(
+                    request.query,
+                    request.max_results,
+                    request.time_filter,
+                    searcher,
+                    extractor,
+                    processor
+                )
+                
+                # Generate report
+                report = await ai_service.generate_report(request.query, processed_contents)
+                
+                # Send final result
+                yield f"data: {json.dumps({'result': {'final_report': report}})}\n\n"
+                
+        except Exception as e:
+            logger.error("streaming_research_failed", error=str(e))
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream"
+    )
 
 if __name__ == "__main__":
     import uvicorn

@@ -5,8 +5,8 @@ import numpy as np
 from tenacity import retry, stop_after_attempt, wait_exponential
 import structlog
 import asyncio
-from ..config import Config
-from ..services.cache_service import CacheService
+from config import Config
+from services.cache_service import CacheService
 
 logger = structlog.get_logger()
 
@@ -25,23 +25,40 @@ class AIService:
         Generate a research report based on the query and content chunks
         """
         try:
-            # Generate new report
-            logger.info("starting_chunk_reranking", query=query, chunks_count=len(chunks))
-            ranked_chunks = await self._rerank_chunks_with_embeddings(query, chunks)
-            logger.info("chunk_reranking_completed", selected_chunks=len(ranked_chunks[:self.max_chunks]))
+            # Log start of process
+            logger.info("starting_research_generation", 
+                       query=query, 
+                       available_chunks=len(chunks))
             
-            context = self._build_context(ranked_chunks[:self.max_chunks])
+            # Rerank chunks
+            ranked_chunks = await self._rerank_chunks_with_embeddings(query, chunks)
+            used_chunks = ranked_chunks[:self.max_chunks]
+            
+            logger.info("chunk_reranking_completed", 
+                       total_chunks=len(chunks),
+                       selected_chunks=len(used_chunks))
+            
+            # Build context and generate report
+            context = self._build_context(used_chunks)
             prompt = self._create_report_prompt(query, context)
             
+            # Log token usage before API call
+            estimated_input_tokens = len(prompt) // 4  # Rough estimation
+            
             logger.info("starting_gpt4_call", 
-                       model=self.model, 
-                       prompt_length=len(prompt),
-                       max_tokens=self.max_tokens)
+                       model=self.model,
+                       estimated_input_tokens=estimated_input_tokens,
+                       max_output_tokens=self.max_tokens)
             
             response = await self._generate_with_gpt4(prompt)
             
-            logger.info("gpt4_call_completed", 
-                       response_length=len(response),
+            # Log completion
+            logger.info("research_metrics", 
+                       chunks_available=len(chunks),
+                       chunks_used=len(used_chunks),
+                       embeddings_generated=len(chunks) + 1,  # chunks + query
+                       estimated_input_tokens=estimated_input_tokens,
+                       output_tokens=len(response) // 4,  # Rough estimation
                        model=self.model)
             
             return response
@@ -135,11 +152,24 @@ class AIService:
         
     def _build_context(self, chunks: List[Dict[str, str]]) -> str:
         """
-        Build context string from chunks
+        Build context string from chunks while respecting token limits
         """
         context_parts = []
+        total_tokens = 0
+        system_prompt_tokens = 100  # Approximate tokens for system prompt
+        max_available_tokens = Config.MAX_INPUT_TOKENS - system_prompt_tokens - 1000  # Buffer for query and other text
+        
         for chunk in chunks:
-            context_parts.append(f"Source: {chunk['url']}\nTitle: {chunk['title']}\nContent: {chunk['content']}\n")
+            # Approximate token count (1 token ≈ 4 chars for English text)
+            chunk_text = f"Source: {chunk['url']}\nTitle: {chunk['title']}\nContent: {chunk['content']}\n"
+            chunk_tokens = len(chunk_text) // 4
+            
+            if total_tokens + chunk_tokens > max_available_tokens:
+                break
+            
+            context_parts.append(chunk_text)
+            total_tokens += chunk_tokens
+        
         return "\n".join(context_parts)
         
     def _create_report_prompt(self, query: str, context: str) -> str:

@@ -11,7 +11,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
 import markdown
 import re
-from ..config import Config, OutputFormat
+from config import Config, OutputFormat
 
 class FormatterService:
     def __init__(self):

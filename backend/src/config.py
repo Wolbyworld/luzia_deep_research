@@ -24,23 +24,24 @@ class Config:
     CACHE_TTL = int(os.getenv("CACHE_TTL", "86400"))  # 24 hours
     
     # Search Settings
-    MAX_SEARCH_RESULTS = int(os.getenv("MAX_SEARCH_RESULTS", "10"))
-    SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "azure")  # azure or serper
+    MAX_SEARCH_RESULTS = int(os.getenv("MAX_SEARCH_RESULTS", "50"))
+    SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "serper")
     
     # Content Processing
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))
     MIN_CHUNK_LENGTH = int(os.getenv("MIN_CHUNK_LENGTH", "100"))
-    MAX_CHUNKS_FOR_REPORT = int(os.getenv("MAX_CHUNKS_FOR_REPORT", "5"))
+    MAX_CHUNKS_FOR_REPORT = int(os.getenv("MAX_CHUNKS_FOR_REPORT", "50"))
     
     # Model Settings
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4-turbo-preview")
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
-    MAX_TOKENS = int(os.getenv("MAX_TOKENS", "4000"))
+    MAX_TOKENS = int(os.getenv("MAX_TOKENS", "16384"))  # GPT-4's max output limit
+    MAX_INPUT_TOKENS = int(os.getenv("MAX_INPUT_TOKENS", "128000"))  # GPT-4's max input limit
     TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
     
     # Rate Limiting
-    RATE_LIMIT_SEARCH = int(os.getenv("RATE_LIMIT_SEARCH", "5"))  # requests per minute
+    RATE_LIMIT_SEARCH = int(os.getenv("RATE_LIMIT_SEARCH", "5"))
     RATE_LIMIT_CONTENT = int(os.getenv("RATE_LIMIT_CONTENT", "20"))
     RATE_LIMIT_AI = int(os.getenv("RATE_LIMIT_AI", "5"))
     
